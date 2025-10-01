@@ -34,7 +34,7 @@ const commands = [
 ].map(cmd => cmd.toJSON());
 
 // 슬래시 명령어 등록
-const rest = new REST({ version: '10' }).setToken('MTMyMDc5OTg4OTg5NDAxNTAzOQ.GWyYZk.rvdpl_u2D26-HHLKCp_6ZGQoOX-akp4wBg3R4c');
+const rest = new REST({ version: '10' }).setToken('MTMyMDc5OTg4OTg5NDAxNTAzOQ.GDigQB.UcDZizupvumUyaQCixCsoVvy1ykaNZD5xLRd5A');
 (async () => {
     try {
         console.log('슬래시 명령어 등록 중...');
@@ -219,4 +219,4 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-client.login('MTMyMDc5OTg4OTg5NDAxNTAzOQ.GWyYZk.rvdpl_u2D26-HHLKCp_6ZGQoOX-akp4wBg3R4c');
+client.login('MTMyMDc5OTg4OTg5NDAxNTAzOQ.GDigQB.UcDZizupvumUyaQCixCsoVvy1ykaNZD5xLRd5A');
