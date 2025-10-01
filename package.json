@@ -1,14 +1,19 @@
 {
   "name": "my-music-bot",
   "version": "1.0.0",
+  "description": "완전판 디스코드 뮤직봇",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
   "dependencies": {
-    "discord.js": "^14.22.1",
     "@discordjs/voice": "^0.19.0",
+    "discord.js": "^14.22.1",
+    "yt-search": "^2.13.1",
     "ytdl-core": "^4.11.5",
-    "yt-search": "^2.13.1"
+    "dotenv": "^16.3.1"
   }
 }
