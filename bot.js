@@ -1,135 +1,120 @@
-// bot.js
-const { Client, GatewayIntentBits } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, AudioPlayerStatus } = require('@discordjs/voice');
+require('dotenv').config();
+const { Client, GatewayIntentBits, Collection, SlashCommandBuilder } = require('discord.js');
+const { joinVoiceChannel, createAudioPlayer, createAudioResource } = require('@discordjs/voice');
 const ytdl = require('ytdl-core');
 const yts = require('yt-search');
 
 const client = new Client({
-    intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildVoiceStates
-    ]
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildVoiceStates],
 });
 
-let queue = [];
-let player = createAudioPlayer();
-let connection = null;
-let loop = false;
-let playlists = {}; // 서버별 플레이리스트 저장
+const queue = new Map(); // 서버별 큐
+const autoChannels = new Map(); // 서버별 자동 재생 채널
 
-client.once('ready', () => {
-    console.log(`✅ Logged in as ${client.user.tag}!`);
-});
+// 슬래시 명령어 등록
+const commands = [
+    new SlashCommandBuilder().setName('play').setDescription('노래 재생').addStringOption(opt => opt.setName('song').setDescription('노래 이름 또는 링크').setRequired(true)),
+    new SlashCommandBuilder().setName('skip').setDescription('노래 건너뛰기'),
+    new SlashCommandBuilder().setName('stop').setDescription('재생 중지'),
+    new SlashCommandBuilder().setName('queue').setDescription('큐 확인'),
+    new SlashCommandBuilder().setName('setmusicchannel').setDescription('자동 재생 전용 채널 설정').addChannelOption(opt => opt.setName('채널').setDescription('자동 재생 채널').setRequired(true)),
+    new SlashCommandBuilder().setName('help').setDescription('명령어 안내 보기'),
+].map(cmd => cmd.toJSON());
 
+const { REST } = require('@discordjs/rest');
+const { Routes } = require('discord-api-types/v10');
+const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+
+(async () => {
+    try {
+        console.log('슬래시 명령어 등록 중...');
+        await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+        console.log('슬래시 명령어 등록 완료!');
+    } catch (err) {
+        console.error(err);
+    }
+})();
+
+// 메시지 자동 재생
 client.on('messageCreate', async message => {
     if (message.author.bot) return;
+    const autoChannelID = autoChannels.get(message.guild.id);
+    if (message.channel.id === autoChannelID) {
+        const songName = message.content;
+        if (!songName) return;
 
-    const args = message.content.split(' ');
-    const command = args.shift().toLowerCase();
+        const result = await yts(songName);
+        if (!result || !result.videos.length) return message.channel.send('노래를 찾을 수 없어요 😢');
 
-    // ─── 음악 재생 ───
-    if (command === '!play' || command === '!p') {
-        const query = args.join(' ');
-        if (!query) return message.channel.send('노래 이름이나 링크를 입력하세요.');
+        const song = { title: result.videos[0].title, url: result.videos[0].url };
+        const serverQueue = queue.get(message.guild.id) || { songs: [] };
+        serverQueue.songs.push(song);
+        queue.set(message.guild.id, serverQueue);
 
-        let url = '';
-        if (ytdl.validateURL(query)) {
-            url = query;
-        } else {
-            const result = await yts(query);
-            if (!result.videos.length) return message.channel.send('검색 결과가 없습니다.');
-            url = result.videos[0].url;
-        }
+        const voiceChannel = message.member.voice.channel;
+        if (!voiceChannel) return message.channel.send('먼저 음성 채널에 들어와 주세요!');
+        const connection = joinVoiceChannel({
+            channelId: voiceChannel.id,
+            guildId: message.guild.id,
+            adapterCreator: message.guild.voiceAdapterCreator,
+        });
 
-        queue.push(url);
-        message.channel.send(`🎵 큐에 추가됨: ${url}`);
+        const player = createAudioPlayer();
+        const resource = createAudioResource(ytdl(song.url, { filter: 'audioonly' }));
+        player.play(resource);
+        connection.subscribe(player);
 
-        if (!connection) {
-            if (!message.member.voice.channel) return message.channel.send('먼저 음성 채널에 들어가세요.');
-            connection = joinVoiceChannel({
-                channelId: message.member.voice.channel.id,
-                guildId: message.guild.id,
-                adapterCreator: message.guild.voiceAdapterCreator
-            });
-            playSong();
-        }
-    }
-
-    // ─── 스킵 ───
-    else if (command === '!skip') {
-        player.stop();
-        message.channel.send('⏭ 다음 곡으로 넘어갑니다.');
-    }
-
-    // ─── 정지 ───
-    else if (command === '!stop') {
-        queue = [];
-        player.stop();
-        if (connection) {
-            connection.destroy();
-            connection = null;
-        }
-        message.channel.send('⏹ 재생을 종료했습니다.');
-    }
-
-    // ─── 큐 확인 ───
-    else if (command === '!queue') {
-        message.channel.send('🎶 현재 큐:\n' + (queue.length ? queue.join('\n') : '큐가 비어있습니다.'));
-    }
-
-    // ─── 반복 ───
-    else if (command === '!loop') {
-        loop = !loop;
-        message.channel.send(`🔁 반복 모드 ${loop ? '활성화' : '비활성화'}`);
-    }
-
-    // ─── 플레이리스트 저장 ───
-    else if (command === '!save') {
-        const name = args[0];
-        if (!name) return message.channel.send('플레이리스트 이름을 입력하세요.');
-        playlists[name] = [...queue];
-        message.channel.send(`💾 플레이리스트 '${name}' 저장 완료`);
-    }
-
-    // ─── 플레이리스트 불러오기 ───
-    else if (command === '!load') {
-        const name = args[0];
-        if (!name || !playlists[name]) return message.channel.send('존재하지 않는 플레이리스트입니다.');
-        queue.push(...playlists[name]);
-        message.channel.send(`📂 플레이리스트 '${name}' 큐에 추가됨`);
-        if (!connection && message.member.voice.channel) {
-            connection = joinVoiceChannel({
-                channelId: message.member.voice.channel.id,
-                guildId: message.guild.id,
-                adapterCreator: message.guild.voiceAdapterCreator
-            });
-            playSong();
-        }
+        message.channel.send(`🎵 재생 시작: **${song.title}**`);
     }
 });
 
-function playSong() {
-    if (!queue.length) {
-        if (connection) {
-            connection.destroy();
-            connection = null;
-        }
-        return;
+// 슬래시 명령어 처리
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isCommand()) return;
+    const serverQueue = queue.get(interaction.guild.id) || { songs: [] };
+
+    switch (interaction.commandName) {
+        case 'play':
+            {
+                const songName = interaction.options.getString('song');
+                const result = await yts(songName);
+                if (!result || !result.videos.length) return interaction.reply('노래를 찾을 수 없어요 😢');
+                const song = { title: result.videos[0].title, url: result.videos[0].url };
+                serverQueue.songs.push(song);
+                queue.set(interaction.guild.id, serverQueue);
+                interaction.reply(`🎵 큐에 추가: **${song.title}**`);
+            }
+            break;
+        case 'skip':
+            interaction.reply('⏭ 다음 곡으로 넘어갑니다');
+            break;
+        case 'stop':
+            serverQueue.songs = [];
+            interaction.reply('⏹ 재생 중지');
+            break;
+        case 'queue':
+            interaction.reply(serverQueue.songs.length ? serverQueue.songs.map((s, i) => `${i + 1}. ${s.title}`).join('\n') : '큐가 비었어요.');
+            break;
+        case 'setmusicchannel':
+            {
+                const channel = interaction.options.getChannel('채널');
+                autoChannels.set(interaction.guild.id, channel.id);
+                interaction.reply(`🎵 자동 재생 전용 채널: ${channel.name}`);
+            }
+            break;
+        case 'help':
+            interaction.reply(`
+🎵 **뮤직봇 명령어 안내**
+- /play [노래] : 노래 재생
+- /skip : 다음 곡
+- /stop : 재생 중지
+- /queue : 현재 큐 확인
+- /setmusicchannel [채널] : 자동 재생 전용 채널 설정
+- /help : 명령어 안내
+💡 자동 채널에서는 명령어 없이 노래 제목만 입력해도 재생됩니다!
+`);
+            break;
     }
+});
 
-    const url = queue[0];
-    const stream = ytdl(url, { filter: 'audioonly' });
-    const resource = createAudioResource(stream);
-
-    player.play(resource);
-    connection.subscribe(player);
-
-    player.once(AudioPlayerStatus.Idle, () => {
-        if (!loop) queue.shift();
-        playSong();
-    });
-}
-
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.TOKEN);
